@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "ETA Invoice BES",
+  "description":"This extension is powered by BES and developed by BES's team. It extracts invoices from the Egyptian Tax Authority portal as Excel or PDF.",
+  "version": "1.0.0",
+   "icons": {
+    "16":  "icons/BES16.png",
+    "32":  "icons/BES32.png",
+    "48":  "icons/BES48.png"
+  },
+ "action": {
+  "default_popup": "popup.html",
+    "default_icon": {
+      "16":  "icons/BES16.png",
+      "32":  "icons/BES32.png",
+      "48":  "icons/BES48.png"
+    },
+    "default_title": "ETA Invoice Tracker"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://invoicing.eta.gov.eg/*"],
+      "js": [
+        "libs/exceljs.min.js",   
+        "libs/jszip.min.js",
+        "libs/jquery.min.js",      
+        "libs/popper.min.js",      
+        "libs/bootstrap.bundle.min.js",   
+        "ETA.js"                   
+      ],
+      "css": [
+        "libs/bootstrap.min.css"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
+  ],
+  "permissions": ["storage"],
+  "host_permissions": ["https://invoicing.eta.gov.eg/*"],
+   "web_accessible_resources": [
+    {
+      "resources": ["icons/*.png"],
+      "matches": ["https://invoicing.eta.gov.eg/*"]
+    }
+  ]
+}

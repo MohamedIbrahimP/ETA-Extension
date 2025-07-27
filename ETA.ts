@@ -6,17 +6,32 @@ declare const XLSX: any;
 declare const ExcelJS: any;
 declare const JSZip:any;
 declare const bootstrap: any;
-let API : string = `https://api-portal.invoicing.eta.gov.eg/api/v1`;
-let invoiceHref : string = `https://invoicing.eta.gov.eg/documents`;
-let receiptHref : string = `https://invoicing.eta.gov.eg/documents`;
+let API : string = `https://api-portal.preprod.invoicing.eta.gov.eg/api/v1`;
+let invoiceHref : string = `https://preprod.invoicing.eta.gov.eg/documents`;
+let receiptHref : string = `https://preprod.invoicing.eta.gov.eg/documents`;
 let currentPage : string = ``;
-let lastSearchedURL : string = ``;
+// let lastSearchedURL : string = ``;
 let lastCallURL : string = ``;
 let user_token: string = ``;
 let responseTotalCount:number=0;
 let taxpayerAddress:string ="";
 let taxpayerRIN:string ="";
 let cfg:any;
+const taxPriority = [
+  "ضريبه القيمه المضافه بالعمله",
+  "ضريبه القيمه المضافه",
+  "ضريبه الجدول (نسبيه)",
+  "ضريبه الجدول (النوعية)",
+  "الخصم تحت حساب الضريبه",
+  "ضريبه الدمغه (نسبيه)",
+  "ضريبه الدمغه (قطعيه بمقدار ثابت)",
+  "ضريبة الملاهى",
+  "رسم تنميه الموارد",
+  "رسم خدمة",
+  "رسم المحليات",
+  "رسم التامين الصحى",
+  "رسوم أخرى"
+];
 
 let uuidsList: any[] = [];
 let headersList: any[] = [];
@@ -171,7 +186,7 @@ async function exportInvoicesZip(dir = "documents") {
   for (const meta of uuidsList) {
     const blob = await fetchPdf(meta.uuid, dir);
     if (blob) {
-      const fileName = `(${slugify(meta.docType)})_${slugify(meta.internalId)}_${slugify(meta.partyName)}.pdf`;
+      const fileName = `(${meta.docType})_${slugify(meta.internalId)}_${slugify(meta.partyName)}.pdf`;
       zip.file(fileName, blob);
     }
     downloaded++;
@@ -220,8 +235,8 @@ async function handleDownloadExcel(dir="documents") {
   const colourHex = (document.getElementById('headerColor') as HTMLInputElement)?.value || '#0078d4';
   const textColourHex = (document.getElementById('headerTextColor') as HTMLInputElement)?.value || '#38925bff';
 
-
-    try {
+  
+  try {
     showSpinner(true);
     await new Promise(r => setTimeout(r));  // give browser a chance to paint spinner
     await fetchUUIDs();
@@ -257,12 +272,19 @@ const textColor = ensureArgb(textColourHex);
     const row=[index+1, ...header.map(h => inv[h] ?? '')];
     headersSheet.addRow(row).eachCell(c => c.alignment = { horizontal: 'center' });
   });
-  headersSheet.eachRow(row => {
-  row.eachCell(cell => {
+headersSheet.eachRow((row, rowNumber) => {
+  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    if (colNumber !== 1) {
+      const isNumber = typeof cell.value === 'number' || (!isNaN(Number(cell.value)) && cell.value !== '');
+      if (isNumber) {
+        cell.numFmt = '#,##0.00';
+      }
+    }
     cell.font = { size: 12 };
-    cell.alignment = { horizontal: 'center',vertical: 'middle', };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
   });
 });
+
   const hdr = headersSheet.getRow(1);
  
   hdr.eachCell(c => {
@@ -301,10 +323,16 @@ headersSheet.columns.forEach(col => {
     const row=[index+1, ...details.map(h => det[h] ?? '')];
     detailsSheet.addRow(row).eachCell(c => c.alignment = { horizontal: 'center' });
   });
-   detailsSheet.eachRow(row => {
-  row.eachCell(cell => {
+detailsSheet.eachRow((row, rowNumber) => {
+  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    if (colNumber !== 1) {
+      const isNumber = typeof cell.value === 'number' || (!isNaN(Number(cell.value)) && cell.value !== '');
+      if (isNumber) {
+        cell.numFmt = '#,##0.00';
+      }
+    }
     cell.font = { size: 12 };
-    cell.alignment = { horizontal: 'center',vertical: 'middle', };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
   });
 });
 
@@ -343,10 +371,16 @@ summaryList.forEach(row =>
   summarySheet.addRow(summaryHeaders.map(h => row[h] ?? ''))
               // .eachCell(c => c.alignment = { horizontal: 'center' })
 );
-summarySheet.eachRow(row => {
-  row.eachCell(cell => {
+summarySheet.eachRow((row, rowNumber) => {
+  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+    if (colNumber !== 1) {
+      const isNumber = typeof cell.value === 'number' || (!isNaN(Number(cell.value)) && cell.value !== '');
+      if (isNumber) {
+        cell.numFmt = '#,##0.00';
+      }
+    }
     cell.font = { size: 12 };
-    cell.alignment = { horizontal: 'center',vertical: 'middle', };
+    cell.alignment = { horizontal: 'center', vertical: 'middle' };
   });
 });
 
@@ -382,7 +416,7 @@ summarySheet.columns.forEach(col => {
   URL.revokeObjectURL(link.href);
 }
 async function buildReceipt(receipt: any){  
-  const flatInv = receipt.receipt;
+const flatInv = receipt.receipt;
 const docType = flatInv.documentType.receiptTypeNameAr;
 let T1:number=0,T4:number =0;
 
@@ -413,93 +447,115 @@ headersHead.add('نوع المستند');
     header['العملة'] = flatInv.currency;
     headersHead.add('العملة')
     const rate=flatInv.exchangeRate;
-    const totalSales=flatInv.totalSales;
-    if(rate !== 0){
+    const totalSales=flatInv.totalSales; // 5000 usd 
+    const isForign:boolean =rate !=0;
+    if(isForign){
       header['معامل العملة'] = rate;
       headersHead.add('معامل العملة');
       header['totalSales(fc)'] = totalSales;
       headersHead.add('totalSales(fc)');
-    } 
-    header['قيمة الفاتورة'] = totalSales;
-    headersHead.add('قيمة الفاتورة');
-    header['الخصم'] = flatInv.totalCommercialDiscount;
-    headersHead.add('الخصم');
-    header['الاجمالي بعد الخصم'] = flatInv.netAmount;
-    headersHead.add('الاجمالي بعد الخصم');
+      header['قيمة الفاتورة'] = totalSales*rate;
+      headersHead.add('قيمة الفاتورة');
+      header['الخصم'] = flatInv.totalCommercialDiscount *rate;
+      headersHead.add('الخصم');
+      header['الاجمالي بعد الخصم'] = flatInv.netAmount*rate;
+      headersHead.add('الاجمالي بعد الخصم');
 
+    } else{
+      header['قيمة الفاتورة'] = totalSales;
+      headersHead.add('قيمة الفاتورة');
+          header['الخصم'] = flatInv.totalCommercialDiscount ;
+          headersHead.add('الخصم');
+          header['الاجمالي بعد الخصم'] = flatInv.netAmount;
+          headersHead.add('الاجمالي بعد الخصم');
+    }
 
    // Flatten tax totals
     (flatInv.taxTotals || []).forEach((tax: any) => {
       if(tax.taxType=='T1'){
-        T1=tax.amount;
-        header['ضريبه القيمه المضافه'] = tax.amount ?? '';
-taxes.add('ضريبه القيمه المضافه');
+        if(isForign){
+          header['ضريبه القيمه المضافه بالعمله'] = tax.amount;
+        taxes.add('ضريبه القيمه المضافه بالعمله');
+        }
+        T1=isForign? tax.amount*rate:tax.amount;
+        header['ضريبه القيمه المضافه'] = isForign? tax.amount*rate:tax.amount;
+        taxes.add('ضريبه القيمه المضافه');
       }
       else if(tax.taxType=='T2'){
-        header['ضريبه الجدول (نسبيه)'] = tax.amount ?? '';
+        header['ضريبه الجدول (نسبيه)'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('ضريبه الجدول (نسبيه)');
 
       }
       else if(tax.taxType=='T3'){
-        header['ضريبه الجدول (النوعية)'] = tax.amount ?? '';
+        header['ضريبه الجدول (النوعية)'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('ضريبه الجدول (النوعية)');
 
       }
       else if(tax.taxType=='T4'){
-        T4=tax.amount;
-        header['الخصم تحت حساب الضريبه'] = tax.amount ?? '';
+        T4 = isForign? tax.amount*rate:tax.amount;;
+        header['الخصم تحت حساب الضريبه'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('الخصم تحت حساب الضريبه');
 
       }
       else if(tax.taxType=='T5'){
-        header['ضريبه الدمغه (نسبيه)'] = tax.amount ?? '';
+        header['ضريبه الدمغه (نسبيه)'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('ضريبه الدمغه (نسبيه)');
 
       }
       else if(tax.taxType=='T6'){
-        header['ضريبه الدمغه (قطعيه بمقدار ثابت)'] = tax.amount ?? '';
+        header['ضريبه الدمغه (قطعيه بمقدار ثابت)'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('ضريبه الدمغه (قطعيه بمقدار ثابت)');
 
       }
       else if(tax.taxType=='T7'){
-        header['ضريبة الملاهى'] = tax.amount ?? '';
+        header['ضريبة الملاهى'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('ضريبة الملاهى');
 
       }
       else if(tax.taxType=='T8'){
-        header['رسم تنميه الموارد'] = tax.amount ?? '';
+        header['رسم تنميه الموارد'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('رسم تنميه الموارد');
 
       }
       else if(tax.taxType=='T9'){
-        header['رسم خدمة'] = tax.amount ?? '';
+        header['رسم خدمة'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('رسم خدمة');
 
       }
       else if(tax.taxType=='T10'){
-        header['رسم المحليات'] = tax.amount ?? '';
+        header['رسم المحليات'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('رسم المحليات');
 
       }
       else if(tax.taxType=='T11'){
-        header['رسم التامين الصحى'] = tax.amount ?? '';
+        header['رسم التامين الصحى'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('رسم التامين الصحى');
 
       }
       else{
-        header['رسوم أخرى'] = tax.amount ?? '';
+        header['رسوم أخرى'] = isForign?tax.amount*rate:tax.amount;
 taxes.add('رسوم أخرى');
 
       }
 
     });
 
-    
-    header['خصم اضافي علي الفاتورة'] = flatInv.extraReceiptDiscount[0].amount?? 0;
+
+
+     if(isForign){
+          header['خصم اضافي علي الفاتورة'] = flatInv.extraReceiptDiscount[0]?.amount ?? 0 *rate;
+    headersHead.add('خصم اضافي علي الفاتورة');
+    header['اجمالي الفاتورة'] = flatInv.totalAmount*rate;
+    headersHead.add('اجمالي الفاتورة');
+    header['اجمالي الايصال بالعمله'] = flatInv.totalAmount;
+    headersHead.add('اجمالي الايصال بالعمله');
+    }else{
+                header['خصم اضافي علي الفاتورة'] = flatInv.extraReceiptDiscount[0]?.amount ?? 0 ;
     headersHead.add('خصم اضافي علي الفاتورة');
     header['اجمالي الفاتورة'] = flatInv.totalAmount;
     headersHead.add('اجمالي الفاتورة');
-    
+    }
+   
 
     if(cfg['submitterId'])
     {
@@ -564,44 +620,48 @@ headersHead.add('مرجع طلب البيع');
       row['كود الوحدة']= item.unitType;
       detailsHead.add('كود الوحدة');
       row['الكمية'] = item.quantity;
-      detailsHead.add('الكمية');  
-      row['سعر الوحدة'] = item.unitPrice;
+      detailsHead.add('الكمية');
+      if(rate !==0){
+            row['العمله'] = rate;
+      detailsHead.add('العمله'); 
+      }
+      row['سعر الوحدة'] = isForign ?item.unitPrice*rate:item.unitPrice;
       detailsHead.add('سعر الوحدة');  
-        row['القيمة'] = item.totalSale;
+        row['القيمة'] = isForign? item.totalSale*rate: item.totalSale;
         detailsHead.add('القيمة');
-        row['الخصم'] = item.commercialDiscount[0].amount??0;
+        row['الخصم'] = isForign? item.commercialDiscount[0]?.amount??0*rate : item.commercialDiscount[0]?.amount??0;
         detailsHead.add('الخصم');
-        row['الاجمالي بعد الخصم'] = item.netSale;
+        row['الاجمالي بعد الخصم'] = isForign? item.netSale*rate:item.netSale;
         detailsHead.add('الاجمالي بعد الخصم');
       
         (item.taxableItems || []).forEach((tax: any) => {
              if(tax.taxType=='T1')
-        row['ضريبه القيمه المضافه'] = tax.amount ?? '';
+        row['ضريبه القيمه المضافه'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T2')
-        row['ضريبه الجدول (نسبيه)'] = tax.amount ?? '';
+        row['ضريبه الجدول (نسبيه)'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T3')
-        row['ضريبه الجدول (النوعية)'] = tax.amount ?? '';
+        row['ضريبه الجدول (النوعية)'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T4')
-        row['الخصم تحت حساب الضريبه'] = tax.amount ?? '';
+        row['الخصم تحت حساب الضريبه'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T5')
-        row['ضريبه الدمغه (نسبيه)'] = tax.amount ?? '';
+        row['ضريبه الدمغه (نسبيه)'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T6')
-        row['ضريبه الدمغه (قطعيه بمقدار ثابت)'] = tax.amount ?? '';
+        row['ضريبه الدمغه (قطعيه بمقدار ثابت)'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T7')
-        row['ضريبة الملاهى'] = tax.amount ?? '';
+        row['ضريبة الملاهى'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T8')
-        row['رسم تنميه الموارد'] = tax.amount ?? '';
+        row['رسم تنميه الموارد'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T9')
-        row['رسم خدمة'] = tax.amount ?? '';
+        row['رسم خدمة'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T10')
-        row['رسم المحليات'] = tax.amount ?? '';
+        row['رسم المحليات'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T11')
-        row['رسم التامين الصحى'] = tax.amount ?? '';
+        row['رسم التامين الصحى'] = isForign? tax.amount*rate:tax.amount;
       if(tax.taxType=='T12')
-        row['رسوم أخرى'] = tax.amount ?? '';
+        row['رسوم أخرى'] = isForign? tax.amount*rate:tax.amount;
       });
 
-        row['الاجمالي'] = item.total;
+        row['الاجمالي'] = isForign?item.total*rate:item.total;
         detailsHead.add('الاجمالي');
        
 
@@ -619,18 +679,18 @@ if(!typeSummary){
   const typeSummary={}
   typeSummary['نوع المستند']=docType;
   typeSummary['العدد']=1;
-  typeSummary['totalNetAmount']=flatInv.netAmount;
+  typeSummary['totalNetAmount']=isForign ?flatInv.netAmount*rate:flatInv.netAmount;
   typeSummary['ضريبه القيمه المضافه']=T1;
   typeSummary['الخصم تحت حساب الضريبه']=T4;
-  typeSummary['totalinvoiceAmount']=flatInv.totalAmount;
+  typeSummary['totalinvoiceAmount']=isForign?flatInv.totalAmount*rate:flatInv.totalAmount;
   summaryList.push(typeSummary);
 }
 else{
   typeSummary['العدد']++;
-  typeSummary['totalNetAmount']+=flatInv.netAmount;
+  typeSummary['totalNetAmount']+=isForign ?flatInv.netAmount*rate:flatInv.netAmount;;
   typeSummary['ضريبه القيمه المضافه']+=T1;
   typeSummary['الخصم تحت حساب الضريبه']+=T4;
-  typeSummary['totalinvoiceAmount']+=flatInv.totalAmount;
+  typeSummary['totalinvoiceAmount']+=isForign? flatInv.totalAmount*rate : flatInv.totalAmount;
 }
 
 }
@@ -663,17 +723,18 @@ headersHead.add('نوع المستند');
     headersHead.add('تاريخ التقديم')
     header['الرقم الداخلي'] = flatInv.internalID;
     headersHead.add('الرقم الداخلي')
-    header['العملة'] = flatInv.currenciesSold;
+    header['العملة'] = flatInv.currencySegments[0].currency;
     headersHead.add('العملة')
-    const rate=flatInv.currencySegments[0]?.currencyExchangeRate;
-    const totalSales=flatInv.currencySegments[0]?.totalSales;
-    if(rate !== 0){
+    const isForign:boolean=flatInv.currenciesSold =='Foreign';
+    const rate=flatInv.currencySegments[0].currencyExchangeRate;
+    const totalSalesFC=flatInv.currencySegments[0].totalSales;
+    if(isForign){
       header['معامل العملة'] = rate;
       headersHead.add('معامل العملة');
-      header['totalSales(fc)'] = totalSales;
+      header['totalSales(fc)'] = totalSalesFC;
       headersHead.add('totalSales(fc)');
     } 
-    header['قيمة الفاتورة'] = totalSales;
+    header['قيمة الفاتورة'] = flatInv.netAmount;
     headersHead.add('قيمة الفاتورة');
     header['الخصم'] = flatInv.totalDiscount;
     headersHead.add('الخصم');
@@ -684,6 +745,10 @@ headersHead.add('نوع المستند');
    // Flatten tax totals
     (flatInv.taxTotals || []).forEach((tax: any) => {
       if(tax.taxType=='T1'){
+        if(isForign){
+            header['ضريبه القيمه المضافه بالعمله'] = tax.amount/rate;
+taxes.add('ضريبه القيمه المضافه بالعمله');
+        }
         T1=tax.amount;
         header['ضريبه القيمه المضافه'] = tax.amount ?? '';
 taxes.add('ضريبه القيمه المضافه');
@@ -752,7 +817,10 @@ taxes.add('رسوم أخرى');
     headersHead.add('خصم اضافي علي الفاتورة');
     header['اجمالي الفاتورة'] = flatInv.totalAmount;
     headersHead.add('اجمالي الفاتورة');
-    
+    if(isForign){
+        header['اجمالي الفاتورة بالعمله'] = flatInv.currencySegments[0].totalAmount;
+    headersHead.add('اجمالي الفاتورة بالعمله');
+    }
 
     if(cfg['submitterId'])
     {
@@ -902,7 +970,28 @@ const headers:string[] =[];
   for (const element of heads) {
     headers.push(element)
     if(element=='الاجمالي بعد الخصم'){
-      for(const tax of taxs){
+      const taxesArray = Array.from(taxes);
+
+// Sort taxes: known ones first (by priority), then unknown ones alphabetically
+const sortedTaxes = taxesArray.sort((a, b) => {
+  const indexA = taxPriority.indexOf(a);
+  const indexB = taxPriority.indexOf(b);
+
+  const isAInPriority = indexA !== -1;
+  const isBInPriority = indexB !== -1;
+
+  if (isAInPriority && isBInPriority) {
+    return indexA - indexB; // sort by defined order
+  }
+
+  if (isAInPriority) return -1; // a comes before b
+  if (isBInPriority) return 1;  // b comes before a
+
+  // If both are not in the priority list, sort alphabetically
+  return a.localeCompare(b, 'ar'); // Use 'ar' locale for Arabic
+});
+
+      for(const tax of taxesArray){
         headers.push(tax);
       }
     }
@@ -1031,7 +1120,7 @@ async function fetchUUIDs() {
 
   const seenUUIDs = new Set<string>();  // 👈 Track UUIDs to prevent duplicates
 
-  const url = new URL(lastSearchedURL?.trim() ? lastSearchedURL : lastCallURL);
+  const url = new URL(lastCallURL);
   
   const basePath = url.origin + url.pathname;
   const params = url.searchParams;
@@ -1051,7 +1140,7 @@ do {
     params.set("PageNo", String(page));
 
   const pageUrl = `${basePath}?${params.toString()}`;
-  lastSearchedURL = pageUrl;
+  // lastSearchedURL = pageUrl;
 
   const res = await fetch(pageUrl, {
     method: "GET",
@@ -1119,7 +1208,7 @@ await updateCount(index);
         }
       }
     } catch (error) {
-      console.error(`Error fetching details for UUID ${meta.uuid}`, error);
+      console.warn(`Error fetching details for UUID ${meta.uuid}`, error);
     }
 
     // Optional: Wait 500ms between each request
@@ -1146,7 +1235,7 @@ url+"?documentLinesLimit=1000"
         resolve(data);
       },
       error: async function (xhr, status, error) {
-        console.warn(`❌ Failed to fetch invoice ${uuid} (attempt ${retries + 1}):`, status, error);
+        console.warn(`Failed to fetch invoice ${uuid} (attempt ${retries + 1}):`, status, error);
 
         if ((status === 'timeout' || status === 'error' || status === 'canceled') && retries < 2)
  {

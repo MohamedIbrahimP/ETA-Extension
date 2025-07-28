@@ -7,9 +7,9 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
-let API = `https://api-portal.preprod.invoicing.eta.gov.eg/api/v1`;
-let invoiceHref = `https://preprod.invoicing.eta.gov.eg/documents`;
-let receiptHref = `https://preprod.invoicing.eta.gov.eg/documents`;
+let API = `https://api-portal.invoicing.eta.gov.eg/api/v1`;
+let invoiceHref = `https://invoicing.eta.gov.eg/documents`;
+let receiptHref = `https://invoicing.eta.gov.eg/documents`;
 let currentPage = ``;
 // let lastSearchedURL : string = ``;
 let lastCallURL = ``;

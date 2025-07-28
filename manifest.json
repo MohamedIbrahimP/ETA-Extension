@@ -19,7 +19,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://preprod.invoicing.eta.gov.eg/*"],
+      "matches": ["https://invoicing.eta.gov.eg/*"],
       "js": [
         "libs/exceljs.min.js",   
         "libs/jszip.min.js",

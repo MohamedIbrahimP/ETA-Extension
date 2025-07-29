@@ -190,27 +190,28 @@ function exportInvoicesZip() {
         URL.revokeObjectURL(link.href);
     });
 }
-function fetchPdf(uuid_1) {
-    return __awaiter(this, arguments, void 0, function* (uuid, dir = "documents") {
-        try {
-            const url = `${API}/${dir}/${uuid}/PDF`;
-            const response = yield fetch(url, {
-                method: "GET",
-                headers: {
-                    "Authorization": `Bearer ${user_token}`,
-                    "accept-language": localStorage.i18nextLng || "ar"
-                }
-            });
-            if (!response.ok) {
-                console.warn(`Failed to fetch PDF`, response.status);
-                return null;
-            }
-            return response.blob();
+function fetchPdf(uuid, dir = "documents") {
+    return $.ajax({
+        url: `${API}/${dir}/${uuid}/PDF`,
+        method: "GET",
+        headers: {
+            "Authorization": `Bearer ${user_token}`,
+            "accept-language": localStorage.i18nextLng || "ar"
+        },
+        xhrFields: {
+            responseType: "blob" // This is needed to get binary PDF data
+        },
+        timeout: 5000, // 1 seconds timeout
+    }).then(function (data) {
+        return data; // PDF blob
+    }, function (jqXHR, textStatus, errorThrown) {
+        if (textStatus === "timeout") {
+            console.warn(`Request for PDF timed out.`);
         }
-        catch (error) {
-            console.error(`Error fetching PDF for UUID ${uuid}`, error);
-            return null;
+        else {
+            console.error(`Failed to fetch PDF for UUID ${uuid}`, errorThrown);
         }
+        return null;
     });
 }
 function slugify(text = '') {
@@ -1101,7 +1102,7 @@ function getDocumentDetails(uuid_1) {
             $.ajax({
                 url: url,
                 method: "GET",
-                timeout: 1000,
+                timeout: 5e3,
                 cache: false,
                 headers: {
                     "Content-Type": "application/json",

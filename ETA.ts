@@ -204,33 +204,36 @@ async function exportInvoicesZip(dir = "documents") {
   link.remove();
   URL.revokeObjectURL(link.href);
 }
-function fetchPdf(uuid, dir = "documents") {
-  return $.ajax({
-    url: `${API}/${dir}/${uuid}/PDF`,
-    method: "GET",
-    headers: {
-      "Authorization": `Bearer ${user_token}`,
-      "accept-language": localStorage.i18nextLng || "ar"
-    },
-    xhrFields: {
-      responseType: "blob"  // This is needed to get binary PDF data
-    },
-    timeout: 5000, // 1 seconds timeout
-  }).then(
-    function (data) {
-      return data; // PDF blob
-    },
-    function (jqXHR, textStatus, errorThrown) {
-      if (textStatus === "timeout") {
-        console.warn(`Request for PDF timed out.`);
-      } else {
-        console.error(`Failed to fetch PDF for UUID ${uuid}`, errorThrown);
-      }
-      return null;
-    }
-  );
-}
+async function fetchPdf(uuid, dir = "documents", attempt = 1) {
+  const url = `${API}/${dir}/${uuid}/pdf`;
+  const token = JSON.parse(localStorage.USER_DATA).access_token;
 
+  try {
+    const blob = await $.ajax({
+      url: url,
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "accept-language": localStorage.i18nextLng || "ar"
+      },
+      xhrFields: {
+        responseType: "blob"
+      }
+    });
+
+    return blob; // success
+
+  } catch (error) {
+    console.error(`Error fetching PDF (attempt ${attempt}) for UUID: ${uuid}`, error);
+
+    if (attempt < 3) {
+      console.warn(`Retrying fetchPdf (${attempt + 1}/3) for UUID: ${uuid}`);
+      return fetchPdf(uuid, dir, attempt + 1); // 🔁 recursive retry
+    }
+
+    return null; // failed after 3 attempts
+  }
+}
 
 function slugify(text = '') {
   return text.replace(/[\/\\:*?"<>|]/g, '_').trim();
@@ -1165,7 +1168,7 @@ do {
     for (const inv of result) {
       const uuid = isRecent ? inv.uuid : inv.source.uuid;
       const internalId = isRecent ? inv.internalId : inv.source.internalId;
-      const docType = isRecent ? inv.documentTypeNameSecondaryLang : inv.source.documentTypeNameSecondaryLang;
+      const docType = isRecent ? inv.documentTypeNameSecondaryLang : inv.source.documentTypeNameAr;
 
       if (!seenUUIDs.has(uuid)) {
         seenUUIDs.add(uuid);

@@ -190,28 +190,32 @@ function exportInvoicesZip() {
         URL.revokeObjectURL(link.href);
     });
 }
-function fetchPdf(uuid, dir = "documents") {
-    return $.ajax({
-        url: `${API}/${dir}/${uuid}/PDF`,
-        method: "GET",
-        headers: {
-            "Authorization": `Bearer ${user_token}`,
-            "accept-language": localStorage.i18nextLng || "ar"
-        },
-        xhrFields: {
-            responseType: "blob" // This is needed to get binary PDF data
-        },
-        timeout: 5000, // 1 seconds timeout
-    }).then(function (data) {
-        return data; // PDF blob
-    }, function (jqXHR, textStatus, errorThrown) {
-        if (textStatus === "timeout") {
-            console.warn(`Request for PDF timed out.`);
+function fetchPdf(uuid_1) {
+    return __awaiter(this, arguments, void 0, function* (uuid, dir = "documents", attempt = 1) {
+        const url = `${API}/${dir}/${uuid}/pdf`;
+        const token = JSON.parse(localStorage.USER_DATA).access_token;
+        try {
+            const blob = yield $.ajax({
+                url: url,
+                method: "GET",
+                headers: {
+                    "Authorization": `Bearer ${token}`,
+                    "accept-language": localStorage.i18nextLng || "ar"
+                },
+                xhrFields: {
+                    responseType: "blob"
+                }
+            });
+            return blob; // success
         }
-        else {
-            console.error(`Failed to fetch PDF for UUID ${uuid}`, errorThrown);
+        catch (error) {
+            console.error(`Error fetching PDF (attempt ${attempt}) for UUID: ${uuid}`, error);
+            if (attempt < 3) {
+                console.warn(`Retrying fetchPdf (${attempt + 1}/3) for UUID: ${uuid}`);
+                return fetchPdf(uuid, dir, attempt + 1); // 🔁 recursive retry
+            }
+            return null; // failed after 3 attempts
         }
-        return null;
     });
 }
 function slugify(text = '') {
@@ -1042,7 +1046,7 @@ function fetchUUIDs() {
                 for (const inv of result) {
                     const uuid = isRecent ? inv.uuid : inv.source.uuid;
                     const internalId = isRecent ? inv.internalId : inv.source.internalId;
-                    const docType = isRecent ? inv.documentTypeNameSecondaryLang : inv.source.documentTypeNameSecondaryLang;
+                    const docType = isRecent ? inv.documentTypeNameSecondaryLang : inv.source.documentTypeNameAr;
                     if (!seenUUIDs.has(uuid)) {
                         seenUUIDs.add(uuid);
                         const partyName = isRecent

@@ -6,17 +6,32 @@ declare const XLSX: any;
 declare const ExcelJS: any;
 declare const JSZip:any;
 declare const bootstrap: any;
+declare const chrome: any;
 let API : string = `https://api-portal.invoicing.eta.gov.eg/api/v1`;
 let invoiceHref : string = `https://invoicing.eta.gov.eg/documents`;
 let receiptHref : string = `https://invoicing.eta.gov.eg/documents`;
 let currentPage : string = ``;
-// let lastSearchedURL : string = ``;
+let logoUrl : string = ``;
 let lastCallURL : string = ``;
 let user_token: string = ``;
 let responseTotalCount:number=0;
 let taxpayerAddress:string ="";
 let taxpayerRIN:string ="";
 let cfg:any;
+const DEFAULT_OPTIONS = {
+  documentTypeNameAr: true,
+  submitterId: true,
+  submitterName: true,
+  recipientId: true,
+  recipientName: true,
+  submitterAndReceiverAddress: false,
+  PORSOR: false,
+  singleSheet: true,
+  headerColor: "#0078d4",
+  headerTextColor: "#000000"
+};
+const STORAGE_KEY = "eta_export_options";
+
 const taxPriority = [
   "ضريبه القيمه المضافه بالعمله",
   "ضريبه القيمه المضافه",
@@ -80,6 +95,18 @@ let taxes =new Set<string>();
 window.addEventListener('load', () => {
    extension();
 });
+window.addEventListener("message", (event) => {
+  if (event.source !== window) return; // only same-window messages
+  const msg = event.data;
+  if (!msg || msg.source !== "ETA_EXTENSION_BRIDGE") return;
+
+  const { besIcon } = msg.payload; // this is the chrome.runtime URL
+logoUrl=besIcon;
+console.log(logoUrl);
+console.log(msg.payload);
+
+});
+
 //
 function extension() {
   const style = document.createElement('style');
@@ -240,17 +267,28 @@ function slugify(text = '') {
 }
 async function handleDownloadExcel(dir="documents") {
 
-    const selected  = collectSelectedFields();          // Step 1 set of selected
-    cfg       = buildConfigFromSelection(selected); // Step 2
-  const colourHex = (document.getElementById('headerColor') as HTMLInputElement)?.value || '#0078d4';
-  const textColourHex = (document.getElementById('headerTextColor') as HTMLInputElement)?.value || '#38925bff';
+ const opts = loadOptions();
+  cfg = {
+    singleSheet: opts.singleSheet,
+    documentTypeNameAr: opts.documentTypeNameAr,
+    submitterId: opts.submitterId,
+    submitterName: opts.submitterName,
+    recipientId: opts.recipientId,
+    recipientName: opts.recipientName,
+    submitterAndReceiverAddress: opts.submitterAndReceiverAddress,
+    PORSOR: opts.PORSOR
+  };
+  const colourHex = opts.headerColor;
+  const textColourHex = opts.headerTextColor;
 
   
   try {
     showSpinner(true);
     await new Promise(r => setTimeout(r));  // give browser a chance to paint spinner
     await fetchUUIDs();
-    await fetchDetails(dir);        
+    await fetchDetails(dir);  
+    console.log(textColourHex);
+          
     await exportFilteredRowsExcelJS(colourHex,textColourHex); 
     }finally {
     showSpinner(false);
@@ -260,171 +298,272 @@ async function handleDownloadExcel(dir="documents") {
 
 //#region  Excel functions 
 
-async function exportFilteredRowsExcelJS(headerHex: string,textColourHex: string) {
-  
-  if (!headersList.length) { alert("Please Select Valid Search Criteria!"); return; }
-const fillColor =ensureArgb(headerHex);
-const textColor = ensureArgb(textColourHex);
+async function exportFilteredRowsExcelJS(headerHex: string, textColourHex: string) {
+  if (!headersList.length) {
+    alert("Please Select Valid Search Criteria!");
+    return;
+  }
 
-  const wb  = new ExcelJS.Workbook();
-  /**  Headers Sheet */
-  const headersSheet  = wb.addWorksheet("Headers");
+  const fillColor = ensureArgb(headerHex);
+  const textColor = ensureArgb(textColourHex);
+  const wb = new ExcelJS.Workbook();
 
-  const header = await getHeaders(headersHead,taxes);;
-  const headers = ["ID",...header];
+  /** ==== HEADERS SHEET (created first) ==== */
+  const headersSheet = wb.addWorksheet("الفواتير");
+  const headerKeys = await getHeaders(headersHead, taxes); // e.g., ["internalId", "partyName", ...]
+  const headers = ["ID", "View", ...headerKeys];
+
   headersSheet.columns = headers.map(h => ({
     header: h,
     key: h,
-    style: { alignment: { horizontal: 'center' } }
+    style: { alignment: { horizontal: "center" } }
   }));
 
-  headersList.forEach((inv,index) => {
-    const row=[index+1, ...header.map(h => inv[h] ?? '')];
-    headersSheet.addRow(row).eachCell(c => c.alignment = { horizontal: 'center' });
+  // buffer header rows to fill after hyperlink resolution
+  headersList.forEach((inv, index) => {
+    const rowValues = [
+      index + 1,
+      "View",
+      ...headerKeys.map(h => inv[h] ?? "")
+    ];
+    headersSheet.addRow(rowValues).eachCell(c => (c.alignment = { horizontal: "center" }));
   });
-headersSheet.eachRow((row, rowNumber) => {
-  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    if (colNumber !== 1) {
-      const isNumber = typeof cell.value === 'number' || (!isNaN(Number(cell.value)) && cell.value !== '');
-      if (isNumber) {
-        cell.numFmt = '#,##0.00';
+
+
+  /** ==== DETAILS SHEET OR PER-INVOICE SHEETS ==== */
+  const detailRowMap: Record<string, number> = {}; // maps invoiceId -> first row in details (shared) or first detail row in its own sheet
+  const invoiceSheetNames: string[] = [];
+
+  if (cfg.singleSheet) {
+    // Shared Details sheet
+    const detailsSheet = wb.addWorksheet("التفاصيل");
+    const detailsHeaderKeys = await getHeaders(detailsHead, taxes);
+    const detailsHeader = ["ID", ...detailsHeaderKeys]; // assume UUID is second column for linking
+    detailsSheet.columns = detailsHeader.map(h => ({
+      header: h,
+      key: h,
+      style: { alignment: { horizontal: "center" } }
+    }));
+
+    let detailIndex = 0;
+    for (const inv of headersList) {
+      const uuid = inv['الرقم الالكتروني'];
+      const invDetails: any[] = Array.isArray(inv.details) ? inv.details : [];
+
+      for (const det of invDetails) {
+        detailIndex++;
+        // Place UUID explicitly in second column; assume inv.uuid is duplicated per detail for jump
+        const rowValues = [detailIndex, ...detailsHeaderKeys.map(h => det[h] ?? "")];
+        const addedRow = detailsSheet.addRow(rowValues);
+        addedRow.eachCell(c => (c.alignment = { horizontal: "center" }));
+
+        if (!(uuid in detailRowMap)) {
+          detailRowMap[uuid] = addedRow.number; // first occurrence row
+        }
       }
     }
-    cell.font = { size: 12 };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-  });
-});
 
-  const hdr = headersSheet.getRow(1);
- 
-  hdr.eachCell(c => {
-    c.font = { bold: true,size: 12, color: { argb: textColor } };
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
-  });
-// 🟢 Call this *after* you have finished adding all rows to headersSheet
-headersSheet.columns.forEach(col => {
-  let max = 0;
-  if (typeof col.header === 'string') {
-    max = col.header.length;
-  }
-  col.eachCell({ includeEmpty: true }, cell => {
-    const raw = cell.value ?? '';            // null/undefined → ''
-    const len = String(raw).length;          // coerce to string
-    if (len > max) max = len;
-  });
-  col.width = Math.min(Math.max(max + 8, 10), 50); // min 10, max 50
-});
- hdr.height=22;
+    // format shared Details body
+    detailsSheet.eachRow((row, rowNumber) => {
+      row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+        if (colNumber !== 1) {
+          const isNumber =
+            typeof cell.value === "number" ||
+            (!isNaN(Number(cell.value)) && cell.value !== "");
+          if (isNumber) cell.numFmt = "#,##0.00";
+        }
+        cell.font = { size: 12 };
+        cell.alignment = { horizontal: "center", vertical: "middle" };
+      });
+    });
 
+    // autosize shared Details columns
+    detailsSheet.columns.forEach(col => {
+      let max = 0;
+      if (typeof col.header === "string") max = col.header.length;
+      col.eachCell({ includeEmpty: true }, cell => {
+        const raw = cell.value ?? "";
+        const len = String(raw).length;
+        if (len > max) max = len;
+      });
+      col.width = Math.min(Math.max(max + 8, 10), 50);
+    });  
+    // style shared Details header
+    const dhdr = detailsSheet.getRow(1);
+    dhdr.height = 22;
+    dhdr.eachCell(c => {
+      c.font = { bold: true, size: 12, color: { argb: textColor } };
+      c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillColor } };
+    });
+  } else {
+    // Separate invoice sheets
+    const detailsHeaderKeys = await getHeaders(detailsHead, taxes);
 
- /**  Details Sheet */
-  const detailsSheet  = wb.addWorksheet("Details");
+    for (let i = 0; i < headersList.length; i++) {
+      const inv = headersList[i];
+      const uuid = inv['الرقم الالكتروني'];
+      const sheetName = `${i + 1}`;
+      invoiceSheetNames.push(sheetName);
+      const invoiceSheet = wb.addWorksheet(sheetName);
 
-  const details = await getHeaders(detailsHead,taxes);
-  const detailsHeader = ["ID",...details];
-  detailsSheet.columns = detailsHeader.map(h => ({
-    header: h,
-    key: h,
-    width: Math.max(h.length, ...detailsHeader.map(r => String(r[h] ?? '').length)) + 2,
-    style: { alignment: { horizontal: 'center' } }
-  }));
+      const detailsHeader = ["ID", ...detailsHeaderKeys];
+      invoiceSheet.columns = detailsHeader.map(h => ({
+        header: h,
+        key: h,
+        style: { alignment: { horizontal: "center" } }
+      }));
 
-  detailsList.forEach((det,index) => {
-    const row=[index+1, ...details.map(h => det[h] ?? '')];
-    detailsSheet.addRow(row).eachCell(c => c.alignment = { horizontal: 'center' });
-  });
-detailsSheet.eachRow((row, rowNumber) => {
-  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    if (colNumber !== 1) {
-      const isNumber = typeof cell.value === 'number' || (!isNaN(Number(cell.value)) && cell.value !== '');
-      if (isNumber) {
-        cell.numFmt = '#,##0.00';
+      const invDetails: any[] = Array.isArray(inv.details) ? inv.details : [];
+      let rowIdx = 0;
+      for (const det of invDetails) {
+        rowIdx++;
+        const row = [rowIdx, ...detailsHeaderKeys.map(h => det[h] ?? "")];
+        const added = invoiceSheet.addRow(row);
+        added.eachCell(c => (c.alignment = { horizontal: "center" }));
+
+        if (!(uuid in detailRowMap)) {
+          detailRowMap[uuid] = added.number;
+        }
       }
+
+      invoiceSheet.eachRow((row, rowNumber) => {
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          if (colNumber !== 1) {
+            const isNumber =
+              typeof cell.value === "number" ||
+              (!isNaN(Number(cell.value)) && cell.value !== "");
+            if (isNumber) cell.numFmt = "#,##0.00";
+          }
+          cell.font = { size: 12 };
+          cell.alignment = { horizontal: "center", vertical: "middle" };
+        });
+      });
+
+      invoiceSheet.columns.forEach(col => {
+        let max = 0;
+        if (typeof col.header === "string") max = col.header.length;
+        col.eachCell({ includeEmpty: true }, cell => {
+          const raw = cell.value ?? "";
+          const len = String(raw).length;
+          if (len > max) max = len;
+        });
+        col.width = Math.min(Math.max(max + 8, 10), 50);
+      });
+      
+      // style per-invoice sheet header
+      const dhdr = invoiceSheet.getRow(1);
+      dhdr.height = 22;
+      dhdr.eachCell(c => {
+        c.font = { bold: true, size: 12, color: { argb: textColor } };
+        c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillColor } };
+      });
+
     }
-    cell.font = { size: 12 };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
-  });
-});
-
-  const dhdr = detailsSheet.getRow(1);
-  dhdr.height=22;
-  dhdr.eachCell(c => {
-    c.font = { bold: true,size: 12, color: { argb: textColor } };
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
-  });
- detailsSheet.columns.forEach(col => {
-  let max = 0;
-  if (typeof col.header === 'string') {
-    max = col.header.length;
   }
-  col.eachCell({ includeEmpty: true }, cell => {
-    const raw = cell.value ?? '';            // null/undefined → ''
-    const len = String(raw).length;          // coerce to string
-    if (len > max) max = len;
+
+  /** ==== PATCH "View" LINKS IN HEADERS ==== */
+  headersList.forEach((inv, index) => {
+    const uuid = inv['الرقم الالكتروني'];
+    const headerRow = headersSheet.getRow(index + 2);
+    let linkFormula = "";
+    if (cfg.singleSheet) {
+      if (uuid in detailRowMap) {
+        // UUID is in column B in Details, link to that cell
+        linkFormula = `=HYPERLINK("#التفاصيل!B${detailRowMap[uuid]}","View")`;
+      }
+    } else {
+      const sheetName = invoiceSheetNames[index] || `${index + 1}`;
+      linkFormula = `=HYPERLINK("#'${sheetName}'!A1","View")`;
+    }
+    headerRow.getCell(2).value = { formula: linkFormula, result: "View" };
   });
-  col.width = Math.min(Math.max(max + 8, 10), 50); // min 10, max 50
-});
 
+  // finalize Headers formatting
+  headersSheet.eachRow((row, rowNumber) => {
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      if (colNumber !== 1) {
+        const isNumber =
+          typeof cell.value === "number" ||
+          (!isNaN(Number(cell.value)) && cell.value !== "");
+        if (isNumber) cell.numFmt = "#,##0.00";
+      }
+      cell.font = { size: 12 };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
+  });
+  headersSheet.columns.forEach(col => {
+    let max = 0;
+    if (typeof col.header === "string") max = col.header.length;
+    col.eachCell({ includeEmpty: true }, cell => {
+      const raw = cell.value ?? "";
+      const len = String(raw).length;
+      if (len > max) max = len;
+    });
+    col.width = Math.min(Math.max(max + 8, 10), 50);
+  });
 
-/**  Summary Sheet */
-  const summarySheet  = wb.addWorksheet("Summary");
-
-  const summaryHeaders = Object.keys(summaryList[0]);
+  /** ==== SUMMARY SHEET ==== */
+  const summarySheet = wb.addWorksheet("Summary");
+  const summaryHeaders = Object.keys(summaryList[0] || {});
   summarySheet.columns = summaryHeaders.map(h => ({
     header: h,
     key: h,
-    width: Math.max(h.length, ...summaryHeaders.map(r => String(r[h] ?? '').length)) + 2,
-    style: { alignment: { horizontal: 'center' } }
+    width: Math.max(h.length, ...summaryHeaders.map(r => String(r[h] ?? "").length)) + 2,
+    style: { alignment: { horizontal: "center" } }
   }));
-
-summaryList.forEach(row =>
-  summarySheet.addRow(summaryHeaders.map(h => row[h] ?? ''))
-              // .eachCell(c => c.alignment = { horizontal: 'center' })
-);
-summarySheet.eachRow((row, rowNumber) => {
-  row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-    if (colNumber !== 1) {
-      const isNumber = typeof cell.value === 'number' || (!isNaN(Number(cell.value)) && cell.value !== '');
-      if (isNumber) {
-        cell.numFmt = '#,##0.00';
+  summaryList.forEach(row => summarySheet.addRow(summaryHeaders.map(h => row[h] ?? "")));
+  summarySheet.eachRow((row, rowNumber) => {
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      if (colNumber !== 1) {
+        const isNumber =
+          typeof cell.value === "number" ||
+          (!isNaN(Number(cell.value)) && cell.value !== "");
+        if (isNumber) cell.numFmt = "#,##0.00";
       }
-    }
-    cell.font = { size: 12 };
-    cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.font = { size: 12 };
+      cell.alignment = { horizontal: "center", vertical: "middle" };
+    });
   });
-});
 
-  const shdr = summarySheet.getRow(1);
+  summarySheet.columns.forEach(col => {
+    let max = 0;
+    if (typeof col.header === "string") max = col.header.length;
+    col.eachCell({ includeEmpty: true }, cell => {
+      const raw = cell.value ?? "";
+      const len = String(raw).length;
+      if (len > max) max = len;
+    });
+    col.width = Math.min(Math.max(max + 8, 10), 50);
+  });
+
+  //#region sheetsHeaders
+  const hdr = headersSheet.getRow(1);
+  hdr.height = 22;
+  hdr.eachCell(c => {
+    c.font = { bold: true, size: 12, color: { argb: textColor } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillColor } };
+  });
+        const shdr = summarySheet.getRow(1);
   shdr.height = 22;
   shdr.eachCell(c => {
-    c.font = { bold: true,size: 14, color: { argb: textColor } };
-    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fillColor } };
+    c.font = { bold: true, size: 14, color: { argb: textColor } };
+    c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fillColor } };
   });
-summarySheet.columns.forEach(col => {
-  let max = 0;
-  if (typeof col.header === 'string') {
-    max = col.header.length;
-  }
-  col.eachCell({ includeEmpty: true }, cell => {
-    const raw = cell.value ?? '';            // null/undefined → ''
-    const len = String(raw).length;          // coerce to string
-    if (len > max) max = len;
-  });
-  col.width = Math.min(Math.max(max + 8, 10), 50); // min 10, max 50
-});
 
-
-
+  //#endregion
+  /** ==== FINALIZE DOWNLOAD ==== */
   const buf = await wb.xlsx.writeBuffer();
-  const blob = new Blob([buf], { type:
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const link = Object.assign(document.createElement('a'), {
+  const blob = new Blob([buf], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const link = Object.assign(document.createElement("a"), {
     href: URL.createObjectURL(blob),
-    download: 'invoices.xlsx'
+    download: "invoices.xlsx"
   });
   link.click();
   URL.revokeObjectURL(link.href);
 }
+
 async function buildReceipt(receipt: any){  
 const flatInv = receipt.receipt;
 const docType = flatInv.documentType.receiptTypeNameAr;
@@ -433,11 +572,11 @@ let T1:number=0,T4:number =0;
 //#region  header
     // Build main header object
     const header: any = {};
-    if(cfg['uuid'])
-    {
+     header.details = [];
+
       header['الرقم الالكتروني'] = flatInv['uuid'] ?? '';
       headersHead.add('الرقم الالكتروني');
-    }
+    
     if(cfg['documentTypeNameAr'])
     {
       header['نوع المستند'] = docType ?? '';
@@ -674,8 +813,8 @@ headersHead.add('مرجع طلب البيع');
         row['الاجمالي'] = isForign?item.total*rate:item.total;
         detailsHead.add('الاجمالي');
        
-
-      detailsList.push(row);
+header.details.push(row);
+      // detailsList.push(row);
     }
     headersList.push(header);
     
@@ -712,11 +851,11 @@ let T1:number=0,T4:number =0;
 //#region  header
     // Build main header object
     const header: any = {};
-    if(cfg['uuid'])
-    {
+    header.details = [];
+
       header['الرقم الالكتروني'] = flatInv['uuid'] ?? '';
       headersHead.add('الرقم الالكتروني');
-    }
+
     if(cfg['documentTypeNameAr'])
     {
       header['نوع المستند'] = flatInv['documentTypeNameSecondaryLang'] ?? '';
@@ -944,8 +1083,8 @@ headersHead.add('مرجع طلب البيع');
         row['الاجمالي'] = item.total;
         detailsHead.add('الاجمالي');
        
-
-      detailsList.push(row);
+      header.details.push(row);
+      // detailsList.push(row);
     }
     headersList.push(header);
     
@@ -1036,7 +1175,6 @@ function collectSelectedFields(): Set<string> {
 }
 function buildConfigFromSelection(selected: Set<string>) {
   return {
-    uuid:               selected.has("uuid"),
     documentTypeNameAr:       selected.has("documentTypeNameAr"),
     submitterId : selected.has("submitterId"),
 submitterName : selected.has("submitterName"),
@@ -1044,11 +1182,30 @@ recipientId : selected.has("ReceiverTaxNumber"),
 recipientName : selected.has("recipientName"),
 submitterAndReceiverAddress : selected.has("submitterAndReceiverAddress"),
 PORSOR : selected.has("PORSOR"),
+singleSheet : selected.has("singleSheet"),
     }
   };
 function ensureArgb(hexColor: string): string {
   hexColor = hexColor.replace('#', '').toUpperCase();
   return hexColor.length === 6 ? 'FF' + hexColor : hexColor;
+}
+function loadOptions() {
+  try {
+    const stored = localStorage.getItem('eta_export_options');
+    if (!stored) return { ...DEFAULT_OPTIONS };
+    const parsed = JSON.parse(stored);
+    return { ...DEFAULT_OPTIONS, ...parsed }; // merge with defaults
+  } catch (e) {
+    console.warn("Failed to load options, falling back to defaults", e);
+    return { ...DEFAULT_OPTIONS };
+  }
+}
+function saveOptions(opts: Record<string, any>) {
+  try {
+    localStorage.setItem('eta_export_options', JSON.stringify(opts));
+  } catch (e) {
+    console.warn("Failed to save options", e);
+  }
 }
 
 //#endregion
@@ -1056,6 +1213,7 @@ function ensureArgb(hexColor: string): string {
 //////////////////////////////////////////////////////
 //#region  global Functions 
 //#region  modal
+
 function ensureModal(type: "invoice" | "receipt") {
   // Remove both modals if they’re already in the DOM
   document.getElementById("eta-bootstrap-modal")?.remove();
@@ -1063,6 +1221,34 @@ function ensureModal(type: "invoice" | "receipt") {
 
   // Inject the requested one
   document.body.insertAdjacentHTML("beforeend", modalTemplates[type]);
+   applyOptionsToModal();
+  setupOptionListeners();
+
+// inject CSS class that uses the extension asset
+const style = document.createElement("style");
+style.textContent = `
+  .modal-body.custom-bg {
+    background-image: url(${logoUrl});
+margin-right:5px;
+    background-repeat: no-repeat;
+    background-position: right top;
+  }
+`;
+document.head.appendChild(style);
+
+// apply the class when the modal appears
+const applyBackground = () => {
+  const modalBody = document.querySelector<HTMLElement>(".modal-body");
+  if (modalBody) {
+    modalBody.classList.add("custom-bg");
+  }
+};
+
+// if modal is added dynamically, observe or retry
+applyBackground();
+
+
+
 }
 function openModalById(id: string) {
   $(`#${id}`).modal({ backdrop: 'static', keyboard: true })
@@ -1085,6 +1271,52 @@ async function updateCount(count: number) {
   if (el) {
     el.innerText = `تحت المعالجة ${count} / ${total} (${Math.round(count / total * 100)}%)`;
   }
+}
+function applyOptionsToModal() {
+  const opts = loadOptions();
+
+  // checkboxes
+  const modal = getModalEl();
+  Object.entries(opts).forEach(([key, value]) => {
+    if (key === "headerColor" || key === "headerTextColor") return;
+    const cb = modal.querySelector<HTMLInputElement>(`input[type=checkbox][data-field="${key}"]`);
+    if (cb) cb.checked = !!value;
+  });
+
+  // color pickers
+  const headerColorInput = modal.querySelector<HTMLInputElement>("#headerColor");
+  const headerTextColorInput = modal.querySelector<HTMLInputElement>("#headerTextColor");
+  if (headerColorInput) headerColorInput.value = opts.headerColor;
+  if (headerTextColorInput) headerTextColorInput.value = opts.headerTextColor;
+}
+function setupOptionListeners() {
+  const modal = getModalEl();
+
+  // checkbox changes
+  modal.querySelectorAll<HTMLInputElement>("input[type=checkbox][data-field]").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const opts = loadOptions();
+      if (cb.dataset.field) {
+        opts[cb.dataset.field] = cb.checked;
+        saveOptions(opts);
+      }
+    });
+  });
+
+  // color pickers
+  const headerColorInput = modal.querySelector<HTMLInputElement>("#headerColor");
+  const headerTextColorInput = modal.querySelector<HTMLInputElement>("#headerTextColor");
+
+  headerColorInput?.addEventListener("input", () => {
+    const opts = loadOptions();
+    opts.headerColor = headerColorInput.value;
+    saveOptions(opts);
+  });
+  headerTextColorInput?.addEventListener("input", () => {
+    const opts = loadOptions();
+    opts.headerTextColor = headerTextColorInput.value;
+    saveOptions(opts);
+  });
 }
 
 
@@ -1234,7 +1466,6 @@ url+"?documentLinesLimit=1000"
     $.ajax({
       url: url,
       method: "GET",
-      timeout: 5e3,
       cache: false,
       headers: {
         "Content-Type": "application/json",
@@ -1300,7 +1531,7 @@ taxpayerAddress=await fetchAddressAPI(taxNumber);
 const modalTemplates: Record<"invoice" | "receipt", string> = {
   invoice: `
   <div class="modal fade" id="eta-bootstrap-modal" tabindex="1" aria-labelledby="modalTitle" aria-hidden="true">
-    <div class="modal-dialog modal-dialog-scrollable">
+    <div class="modal-dialog modal-dialog-scrollable modal-lg">
       <div class="modal-content">
         <div class="modal-header">
           <h5 class="modal-title" id="modalTitle">Exporting to excel.</h5>
@@ -1327,14 +1558,22 @@ const modalTemplates: Record<"invoice" | "receipt", string> = {
           
           <fieldset class="text-end">
             <legend>اعمدة ملف الاكسيل </legend>
-            <label>الرقم الالكتروني <input type="checkbox" data-field="uuid" checked></label><br/>
+            <div class="col-6 d-inline-block">
             <label>نوع المستند <input type="checkbox" data-field="documentTypeNameAr" checked></label><br/>
+            <label>عنوان البائع والمشتري <input type="checkbox" data-field="submitterAndReceiverAddress"></label><br/>
+            <label>مرجع طلب الشراء والبيع <input type="checkbox" data-field="PORSOR"></label><br/>
+            <label> فواتير مجمعه <input type="checkbox" data-field="singleSheet" checked></label><br/>
+            
+            </div>
+            
+            <div class="col-5 d-inline-block">
             <label>اسم البائع <input type="checkbox" data-field="submitterName" checked></label><br/>
             <label>رقم التسجيل الضريبي للبائع <input type="checkbox" data-field="submitterId" checked></label><br/>
             <label>اسم المشتري <input type="checkbox" data-field="recipientName" checked></label><br/>
             <label>رقم التسجيل الضريبي للمشتري<input type="checkbox" data-field="ReceiverTaxNumber" checked></label><br/>
-            <label>عنوان البائع والمشتري <input type="checkbox" data-field="submitterAndReceiverAddress"></label><br/>
-            <label>مرجع طلب الشراء والبيع <input type="checkbox" data-field="PORSOR"></label><br/>
+            
+            </div>
+            
             <!-- more... -->
           </fieldset>
         </div>

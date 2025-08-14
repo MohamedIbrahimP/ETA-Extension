@@ -49,15 +49,15 @@
   ],
   "permissions": ["storage"],
   "host_permissions": [
-    // "https://preprod.invoicing.eta.gov.eg/*",
-    "https://invoicing.eta.gov.eg/*"
+    "https://preprod.invoicing.eta.gov.eg/*",
+    // "https://invoicing.eta.gov.eg/*"
      ],
    "web_accessible_resources": [
     {
       "resources": ["icons/*.png"],
       "matches": [
-        //  "https://preprod.invoicing.eta.gov.eg/*",
-      "https://invoicing.eta.gov.eg/*"
+         "https://preprod.invoicing.eta.gov.eg/*",
+      // "https://invoicing.eta.gov.eg/*"
       ]
     }
   ]
